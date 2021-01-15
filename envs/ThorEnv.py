@@ -116,6 +116,10 @@ class ThorEnv(Env):
 
     return image
 
+  def current_observation(self):
+    processed_obs = self.process_scene_image(self.event.frame)
+    return ImageObservation(image=processed_obs)
+
   def step(self, action_dict):
     ''' Take an environment step
     Args:
@@ -164,9 +168,9 @@ class ThorEnv(Env):
     info = EnvInfo(**info)
     return EnvStep(obs, reward, done, info)
 
-  # =============================
+  # -------------------------------
   # Helper functions for reset
-  # =============================
+  # -------------------------------
   def spawn_agent_helper(self, fixed_location=None, point=None):
     if fixed_location:
       self._event = controller.step(dict(action='TeleportFull', **fixed_location))
@@ -189,9 +193,6 @@ class ThorEnv(Env):
       self._event = controller.step(dict(action='TeleportFull', **point))
 
     return self._event
-
-  def current_observation(self):
-    return ImageObservation(self.process_scene_image(self._event.frame))
 
   def reset(self):
     # -----------------------------------------
@@ -275,6 +276,9 @@ class ThorEnv(Env):
       return {}
     return self.event.metadata
 
+  # -------------------------------
+  # Helper functions
+  # -------------------------------
   def objects_of_type(self, object_type):
     return {o: info for o, info in self.objects.items() if info['objectType'] == object_type}
 
