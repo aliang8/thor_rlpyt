@@ -1,0 +1,18 @@
+[
+  {
+    "actions": [
+      "PutObject"
+    ],
+    "objects": [
+      "Apple",
+      "DiningTable"
+    ],
+    "preconditions": [
+    ],
+    "reward": 1,
+    "goal": [
+      ["isSliced", "Apple", true],
+      ["on", "Apple", "DiningTable", true]
+    ]
+  }
+]
