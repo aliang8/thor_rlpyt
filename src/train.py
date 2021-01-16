@@ -5,8 +5,8 @@ from rlpyt.utils.launching.affinity import make_affinity
 from rlpyt.samplers.serial.sampler import SerialSampler
 # from rlpyt.samplers.serial.collectors import (GpuResetCollector, GpuWaitResetCollector)
 
-from thor_env_test import ThorEnv, ThorTrajInfo
-from agent import ThorLSTMAgent
+from envs import ThorEnv, ThorTrajInfo
+from agent import ThorCNNAgent
 
 from rlpyt.algos.pg.a2c import A2C
 from rlpyt.runners.minibatch_rl import MinibatchRl
@@ -36,7 +36,7 @@ def build_and_train(config):
       max_decorrelation_steps=400,
   )
   algo = A2C()  # Run with defaults.
-  agent = ThorLSTMAgent()
+  agent = ThorCNNAgent()
   runner = MinibatchRl(
       algo=algo,
       agent=agent,
