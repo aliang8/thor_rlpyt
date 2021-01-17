@@ -1,11 +1,12 @@
+import os
 import json
-from utils import condition2statetype
+from envs.utils import condition2statetype
 
 class Task(object):
   '''Task object
   '''
   def __init__(self, task_json):
-    self.task_json = json.load(open(task_json,'r'))
+    self.task_json = json.load(open(os.path.join('tasks', task_json),'r'))
     self.task_completed = False
 
   def __str__(self):
@@ -61,7 +62,7 @@ class Task(object):
 
     return types_to_remove
 
-  def check_task_conditions(self, env, conditions="pre", count=0):
+  def check_task_conditions(self, controller, conditions="pre", count=0):
     '''Check that conditions of the task has been satisfied
     '''
     conditions = self.preconditions if conditions == 'pre' else self.goal_conditions
@@ -71,7 +72,7 @@ class Task(object):
     for i, cond in enumerate(conditions):
       if len(cond) == 3:
         property_, object_type, val = cond
-        obj_infos = env.objects_of_type(object_type)
+        obj_infos = controller.objects_of_type(object_type)
 
         # -----------------------------------------------------
         # Update object settings that don't match preconditions
@@ -87,12 +88,12 @@ class Task(object):
                 property_: val
               }
 
-              env._event = env.controller.step(
+              controller._event = controller.step(
                 action='SetObjectStates',
                 SetObjectStates=object_states)
 
-              if not env.event.metadata['lastActionSuccess']:
-                raise RuntimeError(env.event.metadata['errorMessage'])
+              if not controller.event.metadata['lastActionSuccess']:
+                raise RuntimeError(controller.event.metadata['errorMessage'])
             else:
               raise RuntimeError(f'Failed precondition: {cond}')
         else:
@@ -102,8 +103,8 @@ class Task(object):
         # Check that o1 cond o2 is true
         cond, o1, o2, val = cond
 
-        o1_objs = env.objects_of_type(o1)
-        o2_objs = env.objects_of_type(o2)
+        o1_objs = controller.objects_of_type(o1)
+        o2_objs = controller.objects_of_type(o2)
 
         if cond == 'on':
           condition_satisfied = any(info for o, info in o1_objs.items() if len(set(o2_objs.keys()).intersection(set(info['parentReceptacles']))) > 0)
@@ -116,7 +117,7 @@ class Task(object):
     # ----------------------------------------------------
     if count == 1: return
     if conditions == 'pre': # check it one more time
-      self.check_task_preconditions(env, 1)
+      self.check_task_preconditions(controller, 1)
     else:
       return all(done)
 

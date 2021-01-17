@@ -1,17 +1,17 @@
 [
   {
     "actions": [
-      "PutObject"
+      "ToggleObject"
     ],
     "objects": [
-      "Apple",
-      "DiningTable"
+      "Microwave"
     ],
     "preconditions": [
+      ["isToggled", "Microwave", false]
     ],
     "reward": 1,
     "goal": [
-      ["on", "Apple", "DiningTable", true]
+      ["isToggled", "Microwave", true]
     ]
   }
 ]

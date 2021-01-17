@@ -1,17 +1,20 @@
 # from rlpyt.samplers.parallel.gpu.sampler import GpuSampler
 # from rlpyt.samplers.parallel.gpu.collectors import (GpuResetCollector, GpuWaitResetCollector)
 
+import os
+os.environ["CUDA_LAUNCH_BLOCKING"] = '1'
 from rlpyt.utils.launching.affinity import make_affinity
 from rlpyt.samplers.serial.sampler import SerialSampler
 # from rlpyt.samplers.serial.collectors import (GpuResetCollector, GpuWaitResetCollector)
 
-from envs import ThorEnv, ThorTrajInfo
-from agent import ThorCNNAgent
+from envs.ThorEnv import ThorEnv, ThorTrajInfo
+from src.agent import ThorCNNAgent, ThorParameterizedCNNAgent
+from src.algorithms.ppo import PPO_Custom
+from src.collectors.cpu_collector import CpuResetCollector_Custom
+from src.cnn_architectures import *
 
-from rlpyt.algos.pg.a2c import A2C
 from rlpyt.runners.minibatch_rl import MinibatchRl
 from rlpyt.utils.logging.context import logger_context
-
 
 def build_and_train(config):
   affinity = make_affinity(
@@ -30,13 +33,16 @@ def build_and_train(config):
       EnvCls=ThorEnv,
       TrajInfoCls=ThorTrajInfo,
       env_kwargs={'config': config},  # Learn on individual frames.
-      # CollectorCls=Collector,
-      batch_T=64,  # Longer sampling/optimization horizon for recurrence.
+      CollectorCls=CpuResetCollector_Custom,
+      batch_T=8,  # Longer sampling/optimization horizon for recurrence.
       batch_B=1,  # 16 parallel environments.
       max_decorrelation_steps=400,
   )
-  algo = A2C()  # Run with defaults.
-  agent = ThorCNNAgent()
+  optim_kwargs = dict()
+  algo = PPO_Custom(
+    optim_kwargs=optim_kwargs
+  )  # Run with defaults.
+  agent = ThorParameterizedCNNAgent(model_kwargs=small)
   runner = MinibatchRl(
       algo=algo,
       agent=agent,
@@ -45,19 +51,22 @@ def build_and_train(config):
       log_interval_steps=1e5,
       affinity=affinity,
   )
-  config = {}
-  log_dir = "random"
-  with logger_context(log_dir, 'test', config, use_summary_writer=True):
+  with logger_context(config['log_dir'], config['run_id'], config['name'], config, use_summary_writer=True):
       runner.train()
 
 
 if __name__ == "__main__":
   import argparse
-  from config import default_config
+  from envs.config import default_config
   parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
   parser.add_argument('--cuda-idx', help='gpu to use', type=int, default=None)
+  parser.add_argument('--run_id', help='run identifier (logging)', type=int, default=0)
   parser.add_argument('--mid-batch-reset', help='whether environment resets during itr', type=bool, default=False)
   parser.add_argument('--n-parallel', help='number of sampler workers', type=int, default=2)
-  args = default_config(parser)
+  parser.add_argument('--log-dir', help='folder to store experiment', type=str, default="test")
+  parser.add_argument('--remove-prefix', help='parameter for logging context', type=bool, default=False)
+  parser.add_argument('--name', help='experiment name', type=str, default="debug")
 
+  # Add thor environment configs
+  args = default_config(parser)
   build_and_train(args)

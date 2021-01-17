@@ -82,14 +82,14 @@ class PointerActionModel(torch.nn.Module):
     self.pi = MlpModel(input_dim*2, hidden_sizes=fc_sizes, output_size=pointer_action_size*2 + 1)
 
   def forward(self, obs_encoding, base_action, prev_action, prev_reward):
-    # Compute base action encoding
+    # # Compute base action encoding
     lead_dim, T, B, D = infer_leading_dims(base_action, 1)
     base_action_encoding = self.action_head(base_action.view(T*B,-1))
 
     # Combine image encoding with base action encoding
-    lead_dim, T, B, D = infer_leading_dims(obs_encoding, 1)
-    policy_inputs = torch.cat([obs_encoding, base_action_encoding], dim=-1)
-    out = self.pi(policy_inputs.view(T*B,-1))
+    _, T, B, D = infer_leading_dims(obs_encoding, 1)
+    policy_input = torch.cat([obs_encoding, base_action_encoding], dim=-1)
+    out = self.pi(policy_input.view(T*B,-1))
 
     mu = out[:, :self.pointer_action_size]
     log_std = out[:, self.pointer_action_size:-1]
@@ -115,3 +115,62 @@ class ThorCNNModel(torch.nn.Module):
 
   def compute_pointer_action(self, obs_encoding, base_action, prev_action, prev_reward):
     return self.pointer_model(obs_encoding, base_action, prev_action, prev_reward)
+
+
+class ParameterizedActionModel(torch.nn.Module):
+  def __init__(
+    self,
+    image_shape,
+    base_action_size,
+    pointer_action_size,
+    fc_sizes=512,  # Between conv and lstm.
+    lstm_size=512,
+    use_maxpool=False,
+    channels=None,  # None uses default.
+    kernel_sizes=None,
+    strides=None,
+    paddings=None,
+  ):
+    super().__init__()
+    self.conv = Conv2dHeadModel(
+      image_shape=image_shape,
+      channels=channels or [16, 32],
+      kernel_sizes=kernel_sizes or [8, 4],
+      strides=strides or [4, 2],
+      paddings=paddings or [0, 1],
+      use_maxpool=use_maxpool,
+      hidden_sizes=fc_sizes,  # Applies nonlinearity at end.
+    )
+
+    self.base_action_size = base_action_size
+    self.pointer_action_size = pointer_action_size
+    self.base_pi = torch.nn.Linear(self.conv.output_size, base_action_size)
+    self.pointer_pi = torch.nn.Linear(self.conv.output_size, pointer_action_size*2)
+    self.value = torch.nn.Linear(self.conv.output_size, 1)
+
+  def forward(self, observation, prev_action, prev_reward):
+    img = observation.image.type(torch.float)
+    img = img.mul_(1. / 255)
+
+    # Infer (presence of) leading dimensions: [T,B], [B], or [].
+    lead_dim, T, B, img_shape = infer_leading_dims(img, 3)
+
+    fc_out = self.conv(img.view(T*B, *img_shape))
+
+    pi = F.softmax(self.base_pi(fc_out.view(T*B, -1)), dim=-1)
+    pointer_out = self.pointer_pi(fc_out.view(T*B,-1))
+
+    # mu = pointer_out[:, :self.pointer_action_size]
+    # log_std = pointer_out[:, self.pointer_action_size:-1]
+    # v = pointer_out[:, -1].unsqueeze(-1)
+
+    mu = pointer_out[:, :self.pointer_action_size]
+    log_std = pointer_out[:, self.pointer_action_size:]
+    # v = pointer_out[:, -1].unsqueeze(-1)
+
+    v = self.value(fc_out.view(T*B,-1))
+
+    # Restore leading dimensions: [T,B], [B], or [], as input.
+    pi, mu, log_std, v = restore_leading_dims((pi, mu, log_std, v), lead_dim, T, B)
+
+    return pi, mu, log_std, v
