@@ -6,6 +6,7 @@ from rlpyt.utils.collections import namedarraytuple
 from rlpyt.agents.base import AgentStep, BaseAgent
 from rlpyt.distributions.categorical import Categorical, DistInfo
 from rlpyt.distributions.gaussian import Gaussian, DistInfoStd
+from src.beta import Beta, DistInfoBeta
 from rlpyt.utils.buffer import buffer_to, buffer_func, buffer_method
 
 from models import ThorCNNModel, ParameterizedActionModel
@@ -80,15 +81,20 @@ class ParameterizedCNNAgent(BaseAgent):
   def __call__(self, observation, prev_action, prev_reward):
     """Performs forward pass on training data, for algorithm."""
     policy_inputs = buffer_to((observation, prev_action, prev_reward), device=self.device)
-    pi, mu, log_std, value = self.model(*policy_inputs)
-    return buffer_to((DistInfo(prob=pi), DistInfoStd(mean=mu, log_std=log_std), value), device="cpu")
+    # pi, mu, log_std, value = self.model(*policy_inputs)
+    pi, alpha, beta, value = self.model(*policy_inputs)
+    # return buffer_to((DistInfo(prob=pi), DistInfoStd(mean=mu, log_std=log_std), value), device="cpu")
+    return buffer_to((DistInfo(prob=pi), DistInfoBeta(alpha=alpha, beta=beta), value), device="cpu")
 
   def initialize(self, env_spaces, share_memory=False, global_B=1, env_ranks=None):
     super().initialize(env_spaces, share_memory)
     self.categorical_dist = Categorical(dim=env_spaces.action.spaces[0].n)
-    self.gaussian_dist = Gaussian(
-        dim=env_spaces.action.spaces[1].shape[0],
-        clip=env_spaces.action.spaces[1].high[0]/2,
+    # self.gaussian_dist = Gaussian(
+    #     dim=env_spaces.action.spaces[1].shape[0],
+    #     clip=env_spaces.action.spaces[1].high[0],
+    # )
+    self.beta_dist = Beta(
+      dim=env_spaces.action.spaces[1].shape[0]
     )
 
   @torch.no_grad()
@@ -96,18 +102,24 @@ class ParameterizedCNNAgent(BaseAgent):
     '''Compute policy action distribution from inputs and sample an action.
     '''
     policy_inputs = buffer_to((observation, prev_action, prev_reward), device=self.device)
-    pi, mu, log_std, value = self.model(*policy_inputs)
+    # pi, mu, log_std, value = self.model(*policy_inputs)
+    pi, alpha, beta, value = self.model(*policy_inputs)
     dist_info_b = DistInfo(prob=pi)
     base_action = self.categorical_dist.sample(dist_info_b)
 
-    dist_info_p = DistInfoStd(mean=mu, log_std=log_std)
-    # clipped action [-0.5,0.5] + 0.5 -> [0, 1]
-    pointer_action = self.gaussian_dist.sample(dist_info_p) + 0.5
+    dist_info_p = DistInfoBeta(alpha=alpha, beta=beta)
+    pointer_action = self.beta_dist.sample(dist_info_p)
+    # dist_info_p = DistInfoStd(mean=mu, log_std=log_std)
+    # pointer_action = self.gaussian_dist.sample(dist_info_p)
+    # clip action space
+
+    # pointer_action = torch.clip(pointer_action, self.env_spaces.action.spaces[1].low[0], self.env_spaces.action.spaces[1].high[0])
+    # pointer_action = (pointer_action + 1) / 2
 
     agent_info = AgentInfo(dist_info_b=dist_info_b, dist_info_p=dist_info_p, value=value)
 
     base_action, pointer_action, agent_info = buffer_to((base_action, pointer_action, agent_info), device="cpu")
-    action = torch.cat([base_action.unsqueeze(0).float(), pointer_action], dim=-1)
+    action = torch.hstack([base_action.unsqueeze(-1).float(), pointer_action])
     return AgentStep(action=action, agent_info=agent_info)
 
   @torch.no_grad()

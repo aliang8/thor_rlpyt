@@ -39,6 +39,8 @@ class PPO_Custom(PPO):
             optim_kwargs = dict()
         save__init__args(locals())
 
+        self.opt_info_fields = tuple(f for f in OptInfoCustom._fields)  # copy
+
     def optimize_agent(self, itr, samples):
         """
         Train the agent, for multiple epochs over minibatches taken from the
@@ -87,6 +89,7 @@ class PPO_Custom(PPO):
                 loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     self.agent.parameters(), self.clip_grad_norm)
+                # print(grad_norm.item())
                 self.optimizer.step()
 
                 opt_info.loss.append(loss.item())
@@ -123,13 +126,16 @@ class PPO_Custom(PPO):
         else:
             dist_info_b, dist_info_p, value = self.agent(*agent_inputs)
 
-        dist_b, dist_p = self.agent.categorical_dist, self.agent.gaussian_dist
+        dist_b, dist_p = self.agent.categorical_dist, self.agent.beta_dist
 
         # Base action policy loss
         assert(len(action.shape) == 2)
         ratio = dist_b.likelihood_ratio(action[:,0].squeeze(-1).long(), old_dist_info=old_dist_info_b, new_dist_info=dist_info_b)
-        surr_1 = ratio * advantage
 
+        if len(ratio.shape) == 2: # TODO: this feels hacky ...
+            advantage = advantage.unsqueeze(-1)
+
+        surr_1 = ratio * advantage
         clipped_ratio = torch.clamp(ratio, 1. - self.ratio_clip,
             1. + self.ratio_clip)
         surr_2 = clipped_ratio * advantage
@@ -138,6 +144,10 @@ class PPO_Custom(PPO):
 
         # Pointer action policy loss
         ratio = dist_p.likelihood_ratio(action[:,-2:], old_dist_info=old_dist_info_p, new_dist_info=dist_info_p)
+
+        if len(ratio.shape) == 2 and len(advantage.shape) == 1: # TODO: this feels hacky ...
+            advantage = advantage.unsqueeze(-1)
+
         surr_1 = ratio * advantage
         clipped_ratio = torch.clamp(ratio, 1. - self.ratio_clip,
             1. + self.ratio_clip)

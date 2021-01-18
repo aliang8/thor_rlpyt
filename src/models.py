@@ -158,7 +158,7 @@ class ParameterizedActionModel(torch.nn.Module):
     fc_out = self.conv(img.view(T*B, *img_shape))
 
     pi = F.softmax(self.base_pi(fc_out.view(T*B, -1)), dim=-1)
-    pointer_out = self.pointer_pi(fc_out.view(T*B,-1))
+    pointer_out = torch.sigmoid(self.pointer_pi(fc_out.view(T*B,-1)))
 
     # mu = pointer_out[:, :self.pointer_action_size]
     # log_std = pointer_out[:, self.pointer_action_size:-1]
@@ -168,7 +168,7 @@ class ParameterizedActionModel(torch.nn.Module):
     log_std = pointer_out[:, self.pointer_action_size:]
     # v = pointer_out[:, -1].unsqueeze(-1)
 
-    v = self.value(fc_out.view(T*B,-1))
+    v = self.value(fc_out.view(T*B,-1)).squeeze(-1)
 
     # Restore leading dimensions: [T,B], [B], or [], as input.
     pi, mu, log_std, v = restore_leading_dims((pi, mu, log_std, v), lead_dim, T, B)

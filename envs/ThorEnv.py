@@ -19,7 +19,7 @@ from envs.utils import ACTIONS
 from tasks.task import Task
 
 
-EnvInfo = namedtuple("EnvInfo", ["done"])
+EnvInfo = namedtuple("EnvInfo", ["traj_done"])
 Action = namedarraytuple("Action", ["base_action", "pointer"])
 ImageObservation = namedarraytuple("ImageObservation", ["image"])
 
@@ -230,7 +230,7 @@ class ThorEnv(Env):
     reward = 1 if done else 0
 
     obs = self.current_observation()
-    info = {'done': done}
+    info = {'traj_done': done}
     info = EnvInfo(**info)
     return EnvStep(obs, reward, done, info)
 
