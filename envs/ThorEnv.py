@@ -20,7 +20,7 @@ from tasks.task import Task
 
 
 EnvInfo = namedtuple("EnvInfo", ["traj_done"])
-Action = namedarraytuple("Action", ["base_action", "pointer"])
+Action = namedarraytuple("Action", ["base", "pointer"])
 ImageObservation = namedarraytuple("ImageObservation", ["image"])
 
 class ControllerWrapper(Controller):
@@ -192,7 +192,7 @@ class ThorEnv(Env):
     if type(action_dict) == np.ndarray:
       action = self.config['policy_actions'][int(action_dict[0])]
     else:
-      action = action_dict.base_action
+      action = action_dict.base
 
     # ----------------------
     # Handle movement actions
@@ -281,9 +281,9 @@ class ThorEnv(Env):
 
   @property
   def action_space(self):
-    base_action = IntBox(low=0, high=len(self.config['policy_actions']))
+    base = IntBox(low=0, high=len(self.config['policy_actions']))
     pointer = FloatBox(low=0, high=1, shape=(2,))
-    return Composite([base_action, pointer], Action)
+    return Composite([base, pointer], Action)
 
   @property
   def observation_space(self):

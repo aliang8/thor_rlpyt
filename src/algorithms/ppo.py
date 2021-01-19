@@ -129,10 +129,18 @@ class PPO_Custom(PPO):
         dist_b, dist_p = self.agent.categorical_dist, self.agent.beta_dist
 
         # Base action policy loss
-        assert(len(action.shape) == 2)
-        ratio = dist_b.likelihood_ratio(action[:,0].squeeze(-1).long(), old_dist_info=old_dist_info_b, new_dist_info=dist_info_b)
+        if self.agent.recurrent:
+            assert(len(action.shape) == 3)
+            base = action[:,:,0].long()
+            pointer = action[:,:,-2:]
+        else:
+            assert(len(action.shape) == 2)
+            base = action[:,0].squeeze(-1).long()
+            pointer = action[:,-2:]
 
-        if len(ratio.shape) == 2: # TODO: this feels hacky ...
+        ratio = dist_b.likelihood_ratio(base, old_dist_info=old_dist_info_b, new_dist_info=dist_info_b)
+
+        if len(ratio.shape) - len(advantage.shape) == 1: # TODO: this feels hacky ...
             advantage = advantage.unsqueeze(-1)
 
         surr_1 = ratio * advantage
@@ -143,9 +151,9 @@ class PPO_Custom(PPO):
         pi_loss_b = - valid_mean(surrogate, valid)
 
         # Pointer action policy loss
-        ratio = dist_p.likelihood_ratio(action[:,-2:], old_dist_info=old_dist_info_p, new_dist_info=dist_info_p)
+        ratio = dist_p.likelihood_ratio(pointer, old_dist_info=old_dist_info_p, new_dist_info=dist_info_p)
 
-        if len(ratio.shape) == 2 and len(advantage.shape) == 1: # TODO: this feels hacky ...
+        if len(ratio.shape) - len(advantage.shape) == 1: # TODO: this feels hacky ...
             advantage = advantage.unsqueeze(-1)
 
         surr_1 = ratio * advantage

@@ -7,7 +7,7 @@ from rlpyt.utils.launching.affinity import make_affinity
 from rlpyt.samplers.serial.sampler import SerialSampler
 
 from envs.ThorEnv import ThorEnv, ThorTrajInfo
-from src.agent import ThorCNNAgent, ThorParameterizedCNNAgent
+from src.agent import ThorCNNAgent, ThorParameterizedCNNAgent, ThorParameterizedCNNLSTMAgent
 from src.algorithms.ppo import PPO_Custom
 from src.collectors import CpuResetCollector_Custom, GpuResetCollector_Custom
 from src.cnn_architectures import *
@@ -50,11 +50,12 @@ def build_and_train(config):
     run_slot=0,
     n_cpu_core=16,  # Use 16 cores across all experiments.
     n_gpu=4,  # Use 8 gpus across all experiments.
-    hyperthread_offset=24,  # If machine has 24 cores.
-    n_socket=2,  # Presume CPU socket affinity to lower/upper half GPUs.
-    gpu_per_run=2,  # How many GPUs to parallelize one run across.
+    # hyperthread_offset=24,  # If machine has 24 cores.
+    # n_socket=2,  # Presume CPU socket affinity to lower/upper half GPUs.
+    # gpu_per_run=1,  # How many GPUs to parallelize one run across.
     # cpu_per_run=1,
   )
+  # affinity = dict(cuda_idx=args['cuda_idx'])
 
   sampler = SamplerCls(
       EnvCls=ThorEnv,
@@ -75,7 +76,7 @@ def build_and_train(config):
     optim_kwargs=optim_kwargs
   )  # Run with defaults.
 
-  agent = ThorParameterizedCNNAgent(model_kwargs=small)
+  agent = ThorParameterizedCNNLSTMAgent(model_kwargs=small)
 
   runner = MinibatchRl(
       algo=algo,
@@ -93,7 +94,7 @@ if __name__ == "__main__":
   import argparse
   from envs.config import default_config
   parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-  parser.add_argument('--cuda-idx', help='gpu to use', type=int, default=None)
+  parser.add_argument('--cuda-idx', help='gpu to use', type=int, default=0)
   parser.add_argument('--run_id', help='run identifier (logging)', type=int, default=0)
   parser.add_argument('--mid-batch-reset', help='whether environment resets during itr', type=bool, default=True)
   parser.add_argument('--n-parallel', help='number of sampler workers', type=int, default=2)
