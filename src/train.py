@@ -6,9 +6,13 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = '1'
 from rlpyt.utils.launching.affinity import make_affinity
 from rlpyt.samplers.serial.sampler import SerialSampler
 
-from envs.ThorEnv import ThorEnv, ThorTrajInfo
-from src.agent import ThorCNNAgent, ThorParameterizedCNNAgent, ThorParameterizedCNNLSTMAgent
+from envs.ThorEnv import ThorEnv, ThorEnvFlatObjectCategories, ThorTrajInfo
+from src.agent import (ThorCNNAgent, 
+                       ThorParameterizedCNNAgent, 
+                       ThorParameterizedCNNLSTMAgent,
+                       ThorObjectSelectionR2D1Agent)
 from src.algorithms.ppo import PPO_Custom
+from src.algorithms.r2d1 import R2D1_Custom
 from src.collectors import CpuResetCollector_Custom, GpuResetCollector_Custom
 from src.cnn_architectures import *
 
@@ -57,33 +61,59 @@ def build_and_train(config):
   )
   # affinity = dict(cuda_idx=args['cuda_idx'])
 
+  if config['env'] == 0:
+    EnvCls = ThorEnv
+  elif config['env'] == 1:
+    EnvCls = ThorEnvFlatObjectCategories
+
   sampler = SamplerCls(
-      EnvCls=ThorEnv,
+      EnvCls=EnvCls,
       TrajInfoCls=ThorTrajInfo,
       env_kwargs={'config': config},  # Learn on individual frames.
       CollectorCls=Collector,
-      batch_T=32,  # Longer sampling/optimization horizon for recurrence.
+      batch_T=64,  # Longer sampling/optimization horizon for recurrence.
       batch_B=config['num_envs'],  # 16 parallel environments.
-      max_decorrelation_steps=400,
+      max_decorrelation_steps=0,
       # eval_env_kwargs={'config': config},
       # eval_n_envs=2,
       # eval_max_steps=int(10e3),
       # eval_max_trajectories=4,
   )
 
-  optim_kwargs = dict()
-  algo = PPO_Custom(
-    optim_kwargs=optim_kwargs
-  )  # Run with defaults.
-
-  agent = ThorParameterizedCNNLSTMAgent(model_kwargs=small)
+  # algo = PPO_Custom(**algo_kwargs) 
+  # agent = ThorParameterizedCNNLSTMAgent(model_kwargs=small)
+  if config['algo'] == 'ppo':
+    algo_kwargs = dict(
+      discount=0.99,
+      learning_rate=0.001,
+      value_loss_coeff=1.,
+      entropy_loss_coeff=0.01,
+      # OptimCls=torch.optim.Adam,
+      optim_kwargs=None,
+      clip_grad_norm=1.,
+      initial_optim_state_dict=None,
+      gae_lambda=1,
+      minibatches=1,
+      epochs=4,
+      ratio_clip=0.1,
+      linear_lr_schedule=True,
+      normalize_advantage=False,
+    )
+    algo = PPO_Custom(**algo_kwargs)
+    agent = ThorParameterizedCNNLSTMAgent(model_kwargs=small)
+  else:
+    algo_kwargs = dict(
+      prioritized_replay=False,
+      input_priorities=False
+    )
+    algo = R2D1_Custom(**algo_kwargs)
 
   runner = MinibatchRl(
       algo=algo,
       agent=agent,
       sampler=sampler,
       n_steps=5e6,
-      log_interval_steps=1e3,
+      log_interval_steps=1e4,
       affinity=affinity,
   )
   with logger_context(config['log_dir'], config['run_id'], config['name'], config, use_summary_writer=True, snapshot_mode='gap'):
@@ -103,6 +133,8 @@ if __name__ == "__main__":
   parser.add_argument('--name', help='experiment name', type=str, default="debug")
   parser.add_argument('--num-envs', help='number of training envs', type=int, default=1)
   parser.add_argument('--sampler', help='gpu or serial sampler', type=int, default=0)
+  parser.add_argument('--env', help='which thor env to use', type=int, default=0)
+  parser.add_argument('--algo', help='which algo to use', type=str, default="ppo")
 
 
   # Add thor environment configs

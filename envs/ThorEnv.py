@@ -3,6 +3,7 @@ from ai2thor.controller import Controller
 
 import cv2
 import numpy as np
+import pickle
 
 import gym
 from rlpyt.envs.base import Env, EnvStep
@@ -23,10 +24,12 @@ EnvInfo = namedtuple("EnvInfo", ["traj_done"])
 Action = namedarraytuple("Action", ["base", "pointer"])
 ImageObservation = namedarraytuple("ImageObservation", ["image"])
 
+ObjectSelection = namedarraytuple("ObjectSelection", ["base", "object"])
+ImageAndObjectObservation = namedarraytuple("ImageAndObjectObservation", ["image", "object_categories", "object_ids"])
+
 class ControllerWrapper(Controller):
   def __init__(self, config):
     self.config = config
-    self.headless = False
 
     # --------------
     # Initialize thor instance
@@ -34,9 +37,13 @@ class ControllerWrapper(Controller):
     if ai2thor.__version__ < '2.3.2':
       raise NotImplementedError
 
+    if self.config['headless']:
+      self.config['renderClassImage'] = False
+      self.config['renderObjectImage'] = False
+
     controller_settings = dict(
-      quality=self.config['thor_quality'] if not self.headless else 'Very Low',
-      headless=self.headless,
+      quality=self.config['thor_quality'] if not self.config['headless'] else 'Very Low',
+      headless=self.config['headless'],
       width=self.config['screen_size'],
       height=self.config['screen_size'],
       gridSize=self.config['gridSize'],
@@ -120,7 +127,7 @@ class ThorTrajInfo(TrajInfo):
     super().__init__(**kwargs)
 
   def step(self, observation, action, reward, done, agent_info, env_info):
-    super().step(observation, action, reward, done, agent_info, env_info)
+    super().step(observation, action, reward, done, agent_info, env_info)  
 
 class ThorEnv(Env):
   def __init__(
@@ -229,6 +236,8 @@ class ThorEnv(Env):
     done = self.tasks[0].check_task_conditions(self.controller, conditions='goal')
     reward = 1 if done else 0
 
+    if done: import ipdb; ipdb.set_trace()
+
     obs = self.current_observation()
     info = {'traj_done': done}
     info = EnvInfo(**info)
@@ -300,13 +309,152 @@ class ThorEnv(Env):
   def close(self):
     pass
 
+class ThorEnvFlatObjectCategories(ThorEnv):
+  def __init__(
+    self,
+    config,
+    env_kwargs={}
+  ):
+    super(ThorEnvFlatObjectCategories, self).__init__(config, env_kwargs)
+    self.max_objects_per_timestep = config['max_objects_per_timestep']
+    self.min_bounding_box_area = config['min_bounding_box_area']
+    self.object_category_to_indx = pickle.load(open('object_category_to_indx.pkl', 'rb'))
+    self.object_ids_to_indx = pickle.load(open('object_ids_to_indx.pkl', 'rb'))
+    self.indx_to_object_ids = {v:k for k,v in self.object_ids_to_indx.items()}
+    self.all_object_categories = list(map(lambda x: x.lower(), list(self.object_category_to_indx.keys())))
+
+  def current_observation(self):
+    processed_obs = self.process_scene_image(self.controller.event.frame)
+    object_ids = [(obj_id, bbox) for obj_id, bbox in self.controller.event.instance_detections2D.items()]
+    object_categories = [(cat, bbox) for cat, bboxes in self.controller.event.class_detections2D.items() for bbox in bboxes]
+
+    # Filter objects that are too small
+    def filter_bbox(tup):
+      obj, bbox = tup
+      x_1,y_1,x_2,y_2 = bbox 
+      return (x_2-x_1)*(y_2-y_1) > self.min_bounding_box_area and obj.split('|')[0].lower() in self.all_object_categories 
+
+    object_ids = list(filter(filter_bbox, object_ids))
+    object_categories = list(filter(filter_bbox, object_categories))
+    assert(len(object_ids) == len(object_categories))
+
+    object_ids = [self.object_ids_to_indx[obj_id] for obj_id, _ in object_ids if obj_id in self.object_ids_to_indx]
+    num_objects = min(len(object_ids), self.max_objects_per_timestep)
+    object_ids_one_hot = np.zeros(self.observation_space.spaces[2].shape)
+    object_ids_one_hot[:,np.arange(num_objects), object_ids[:num_objects]] = 1
+
+    object_categories = [self.object_category_to_indx[cat] for cat, _ in object_categories if cat.lower() in self.all_object_categories]
+    object_category_one_hot = np.zeros(self.observation_space.spaces[1].shape)
+    object_category_one_hot[:,np.arange(num_objects), object_categories[:num_objects]] = 1
+
+    return ImageAndObjectObservation(
+      image=processed_obs,
+      object_categories=object_category_one_hot,
+      object_ids=object_ids_one_hot
+    )
+
+  def step(self, action_dict):
+    ''' Take an environment step
+    Args:
+      action (dict): 'action' and 'pointer'
+    '''
+    obs = self.current_observation()
+    visible_object_categories = obs.object_categories
+    visible_object_ids = obs.object_ids
+
+    if type(action_dict) == np.ndarray:
+      action = self.config['policy_actions'][int(action_dict[0])]
+    else:
+      action = self.config['policy_actions'][int(action_dict.base)]
+
+    # ----------------------
+    # Handle movement actions
+    # ----------------------
+    if action in ACTIONS['movement_actions'] or action in ACTIONS['view_actions']:
+      kwargs={}
+      if action in ['LookUp', 'LookDown']:
+        kwargs['degrees'] = self.config['rotateHorizonDegrees']
+      if action in ['RotateLeft', 'RotateRight']:
+        kwargs['degrees'] = self.config['rotateStepDegrees']
+      # print(f'Action: {action}, Degrees: {kwargs}')
+      event = self.controller.step(dict(action=action, **kwargs))
+      self.controller.set_event(event)
+
+    # ----------------------
+    # Handle interaction actions
+    # ----------------------
+    elif action in ACTIONS['interact_actions']:
+      if type(action_dict) == dict and not 'object' in action_dict:
+        raise RuntimeError('Missing object in interact action.')
+
+      if type(action_dict) == np.ndarray:
+        obj_selection = action_dict[-1]
+      else:
+        obj_selection = action_dict.object
+      object_id_indx = visible_object_ids[:,int(obj_selection)].argmax()
+      # print(f'Action: {action}, ObjectId: {self.indx_to_object_ids[object_id_indx]}')
+      event = self.controller.step(dict(action=action, objectId=self.indx_to_object_ids[object_id_indx]))
+      self.controller.set_event(event)
+
+    elif action in ACTIONS['no_op']:
+      reward = 0
+
+    # ----------------------
+    # Task is done
+    # ----------------------
+    done = self.tasks[0].check_task_conditions(self.controller, conditions='goal')
+    reward = 1 if done else 0
+
+    # if done: import ipdb; ipdb.set_trace()
+
+    obs = self.current_observation()
+    info = {'traj_done': done}
+    info = EnvInfo(**info)
+    return EnvStep(obs, reward, done, info)
+
+  @property
+  def action_space(self):
+    base = IntBox(low=0, high=len(self.config['policy_actions']))
+    object = IntBox(low=0, high=self.max_objects_per_timestep)
+    return Composite([base, object], ObjectSelection)
+
+  @property
+  def observation_space(self):
+    image = FloatBox(low=0, high=255, shape=(self.num_channels, self.config['input_size'], self.config['input_size']))
+    object_categories = IntBox(low=0, high=1, shape=(1, self.max_objects_per_timestep, len(self.object_category_to_indx)))
+    object_ids = IntBox(low=0, high=1, shape=(1, self.max_objects_per_timestep, len(self.object_ids_to_indx)))
+    return Composite([image, object_categories, object_ids], ImageAndObjectObservation)
+
 if __name__ == '__main__':
   args = default_config()
-  env = ThorEnv(args)
+
+  # Action space pointer
+  # env = ThorEnv(args)
+  # print(env.action_space)
+  # print(env.observation_space)
+  # env.reset()
+  # a = env.action_space.sample()
+  # obs, reward, done, info = env.step(a)
+  # print('done')
+
+  env = ThorEnvFlatObjectCategories(args)
   print(env.action_space)
   print(env.observation_space)
   env.reset()
-  a = env.action_space.sample()
-  obs, reward, done, info = env.step(a)
-  import ipdb; ipdb.set_trace()
+  for i in range(10):
+    a = env.action_space.sample()
+    print(a)
+    obs, reward, done, info = env.step(a)
   print('done')
+
+  # objects = env.controller.objects_by_type_dict.keys()
+  # obj_to_ind = {k: i for i, k in enumerate(objects)}
+  # objects_ = env.controller.objects.keys()
+  # objss_to_ind = {k: i for i, k in enumerate(objects_)}
+  # print(obj_to_ind)
+  # print(objss_to_ind)
+
+
+  # import pickle
+  # pickle.dump(obj_to_ind, open("object_category_to_indx.pkl",'wb'))
+  # pickle.dump(objss_to_ind, open("object_ids_to_indx.pkl",'wb'))

@@ -18,9 +18,14 @@ class CpuResetCollector_Custom(CpuResetCollector):
         observation = buffer_from_example(observations[0], len(self.envs))
         for b, obs in enumerate(observations):
             observation[b] = obs  # numpy array or namedarraytuple
-        act = env.action_space.null_value().base
-        point = env.action_space.null_value().pointer
-        null_value = np.concatenate((np.expand_dims(act,0), point))
+        if 'object' in env.action_space.names:
+            act = env.action_space.null_value().base
+            object = env.action_space.null_value().object
+            null_value = np.array([act, object])
+        else:
+            act = env.action_space.null_value().base
+            point = env.action_space.null_value().pointer
+            null_value = np.concatenate((np.expand_dims(act,0), point))
         prev_action = np.stack([null_value for env in self.envs])
         prev_reward = np.zeros(len(self.envs), dtype="float32")
         if self.rank == 0:
@@ -31,8 +36,13 @@ class CpuResetCollector_Custom(CpuResetCollector):
                 n_steps = 1 + int(np.random.rand() * max_decorrelation_steps)
                 for _ in range(n_steps):
                     a = env.action_space.sample()
-                    act, point = a.base, a.pointer
-                    a = np.concatenate((np.expand_dims(act,0), point))
+                    if 'object' in env.action_space.names:
+                        act, object = a.base, a.object
+                        a = np.array([act, object])
+                    else:
+                        act, point = a.base, a.pointer
+                        a = np.concatenate((np.expand_dims(act,0), point))
+
                     o, r, d, info = env.step(a)
                     traj_infos[b].step(o, a, r, d, None, info)
 
@@ -41,8 +51,12 @@ class CpuResetCollector_Custom(CpuResetCollector):
                         traj_infos[b] = self.TrajInfoCls()
                     if d:
                         a = env.action_space.null_value()
-                        act, point = a.base, a.pointer
-                        a = np.concatenate((np.expand_dims(act,0), point))
+                        if 'object' in env.action_space.names:
+                            act, object = a.base, a.object
+                            a = np.concatenate((np.expand_dims(act,0), object))
+                        else:
+                            act, point = a.base, a.pointer
+                            a = np.concatenate((np.expand_dims(act,0), point))
                         r = 0
                 observation[b] = o
                 prev_action[b] = a
@@ -116,9 +130,14 @@ class GpuResetCollector_Custom(GpuResetCollector):
         observation = buffer_from_example(observations[0], len(self.envs))
         for b, obs in enumerate(observations):
             observation[b] = obs  # numpy array or namedarraytuple
-        act = env.action_space.null_value().base
-        point = env.action_space.null_value().pointer
-        null_value = np.concatenate((np.expand_dims(act,0), point))
+        if 'object' in env.action_space.names:
+            act = env.action_space.null_value().base
+            object = env.action_space.null_value().object
+            null_value = np.array([act, object])
+        else:
+            act = env.action_space.null_value().base
+            point = env.action_space.null_value().pointer
+            null_value = np.concatenate((np.expand_dims(act,0), point))
         prev_action = np.stack([null_value for env in self.envs])
         prev_reward = np.zeros(len(self.envs), dtype="float32")
         if self.rank == 0:
@@ -129,8 +148,12 @@ class GpuResetCollector_Custom(GpuResetCollector):
                 n_steps = 1 + int(np.random.rand() * max_decorrelation_steps)
                 for _ in range(n_steps):
                     a = env.action_space.sample()
-                    act, point = a.base, a.pointer
-                    a = np.concatenate((np.expand_dims(act,0), point))
+                    if 'object' in env.action_space.names:
+                        act, object = a.base, a.object
+                        a = np.array([act, object])
+                    else:
+                        act, point = a.base, a.pointer
+                        a = np.concatenate((np.expand_dims(act,0), point))
                     o, r, d, info = env.step(a)
                     traj_infos[b].step(o, a, r, d, None, info)
                     if getattr(info, "traj_done", d):
@@ -138,8 +161,12 @@ class GpuResetCollector_Custom(GpuResetCollector):
                         traj_infos[b] = self.TrajInfoCls()
                     if d:
                         a = env.action_space.null_value()
-                        act, point = a.base, a.pointer
-                        a = np.concatenate((np.expand_dims(act,0), point))
+                        if 'object' in env.action_space.names:
+                            act, object = a.base, a.object
+                            a = np.concatenate((np.expand_dims(act,0), object))
+                        else:
+                            act, point = a.base, a.pointer
+                            a = np.concatenate((np.expand_dims(act,0), point))
                         r = 0
                 observation[b] = o
                 prev_action[b] = a

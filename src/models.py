@@ -182,8 +182,7 @@ class ParameterizedRecurrentActionModel(torch.nn.Module):
   def __init__(
     self,
     image_shape,
-    base_action_size,
-    pointer_action_size,
+    action_sizes, # [(size, distr)]
     fc_sizes=512,  # Between conv and lstm.
     lstm_size=512,
     use_maxpool=False,
@@ -203,12 +202,21 @@ class ParameterizedRecurrentActionModel(torch.nn.Module):
       hidden_sizes=fc_sizes,  # Applies nonlinearity at end.
     )
 
-    self.base_action_size = base_action_size
-    self.pointer_action_size = pointer_action_size
+    self.action_sizes = action_sizes
+    self.other_action_size = 0
+    if len(action_sizes) > 1:
+      self.other_action_size = sum([1 if x[1] == 'categorical' else x[0] for x in action_sizes[1:]])
     base_output_size = 1
-    self.lstm = torch.nn.LSTM(self.conv.output_size + base_output_size + pointer_action_size + 1, lstm_size)
-    self.base_pi = torch.nn.Linear(lstm_size, base_action_size)
-    self.pointer_pi = torch.nn.Linear(lstm_size, pointer_action_size*2)
+    self.lstm = torch.nn.LSTM(self.conv.output_size + base_output_size + self.other_action_size + 1, lstm_size)
+    self.base_pi = torch.nn.Linear(lstm_size, action_sizes[0][0])
+    if len(action_sizes) > 1:
+      self.other_pis = torch.nn.ModuleList()
+      for size in action_sizes[1:]:
+        if size[1] == 'gaussian':
+          self.other_pis.append(torch.nn.Linear(lstm_size, size[0]*2))
+        else:
+          self.other_pis.append(torch.nn.Linear(lstm_size, size[0]))
+
     self.value = torch.nn.Linear(lstm_size, 1)
 
   def forward(self, observation, prev_action, prev_reward, init_rnn_state):
@@ -229,20 +237,92 @@ class ParameterizedRecurrentActionModel(torch.nn.Module):
     lstm_out, (hn, cn) = self.lstm(lstm_input.float(), init_rnn_state)
 
     pi = F.softmax(self.base_pi(lstm_out.view(T*B, -1)), dim=-1)
-    pointer_out = torch.sigmoid(self.pointer_pi(lstm_out.view(T*B,-1)))
-
-    # mu = pointer_out[:, :self.pointer_action_size]
-    # log_std = pointer_out[:, self.pointer_action_size:-1]
-    # v = pointer_out[:, -1].unsqueeze(-1)
-
-    mu = pointer_out[:, :self.pointer_action_size]
-    log_std = pointer_out[:, self.pointer_action_size:]
-    # v = pointer_out[:, -1].unsqueeze(-1)
-
     v = self.value(lstm_out.view(T*B,-1)).squeeze(-1)
 
+    for i, size in enumerate(self.action_sizes[1:]):
+      if size[1] == 'gaussian':
+        out = torch.sigmoid(self.other_pis[i](lstm_out.view(T*B,-1)))
+
+        # mu = out[:, :self.pointer_action_size]
+        # log_std = out[:, self.pointer_action_size:-1]
+        # v = out[:, -1].unsqueeze(-1)
+
+        mu = out[:, :self.pointer_action_size]
+        log_std = out[:, self.pointer_action_size:]
+        # v = out[:, -1].unsqueeze(-1)
+      else:
+        out = F.softmax(self.other_pis[i](lstm_out.view(T*B, -1)).cuda(), dim=-1)
+
     # Restore leading dimensions: [T,B], [B], or [], as input.
-    pi, mu, log_std, v = restore_leading_dims((pi, mu, log_std, v), lead_dim, T, B)
+    pi, out, v = restore_leading_dims((pi, out, v), lead_dim, T, B)
     next_rnn_state = RnnState(h=hn, c=cn)
 
-    return pi, mu, log_std, v, next_rnn_state
+    return pi, out, v, next_rnn_state
+
+class ThorR2D1Model(torch.nn.Module):
+  def __init__(
+      self,
+      image_shape,
+      base_action_size,
+      object_selection_size,
+      fc_size=512,  # Between conv and lstm.
+      lstm_size=512,
+      head_size=512,
+      dueling=False,
+      use_maxpool=False,
+      channels=None,  # None uses default.
+      kernel_sizes=None,
+      strides=None,
+      paddings=None,
+      ):
+      """Instantiates the neural network according to arguments; network defaults
+      stored within this method."""
+      super().__init__()
+      self.dueling = dueling
+      self.conv = Conv2dHeadModel(
+        image_shape=image_shape,
+        channels=channels or [32, 64, 64],
+        kernel_sizes=kernel_sizes or [8, 4, 3],
+        strides=strides or [4, 2, 1],
+        paddings=paddings or [0, 1, 1],
+        use_maxpool=use_maxpool,
+        hidden_sizes=fc_size,  # ReLU applied here (Steven).
+      )
+      self.lstm = torch.nn.LSTM(self.conv.output_size + base_action_size + object_selection_size + 1, lstm_size)
+      if dueling:
+        self.base_head = DuelingHeadModel(lstm_size, head_size, base_action_size)
+        self.object_selection_head = DuelingHeadModel(lstm_size, head_size, object_selection_size)
+      else:
+        self.base_head = MlpModel(lstm_size, head_size, output_size=base_action_size)
+        self.object_selection_head = MlpModel(lstm_size, head_size, output_size=object_selection_size)
+
+  def forward(self, observation, prev_action, prev_reward, init_rnn_state):
+    """Feedforward layers process as [T*B,H]. Return same leading dims as
+    input, can be [T,B], [B], or []."""
+    img = observation.image.type(torch.float)  # Expect torch.uint8 inputs
+    img = img.mul_(1. / 255)  # From [0-255] to [0-1], in place.
+
+    # Infer (presence of) leading dimensions: [T,B], [B], or [].
+    lead_dim, T, B, img_shape = infer_leading_dims(img, 3)
+
+    conv_out = self.conv(img.view(T * B, *img_shape))  # Fold if T dimension.
+
+    lstm_input = torch.cat([
+      conv_out.view(T, B, -1),
+      prev_action.view(T, B, -1),  # Assumed onehot.
+      prev_reward.view(T, B, 1),
+      ], dim=2)
+    init_rnn_state = None if init_rnn_state is None else tuple(init_rnn_state)
+    lstm_out, (hn, cn) = self.lstm(lstm_input, init_rnn_state)
+
+    base_q = self.base_head(lstm_out.view(T * B, -1))
+    object_selection_q = self.object_selection_head(lstm_out.view(T * B, -1))
+
+    # Restore leading dimensions: [T,B], [B], or [], as input.
+    base_q = restore_leading_dims(base_q, lead_dim, T, B)
+    object_selection_q = restore_leading_dims(object_selection_q, lead_dim, T, B)
+
+    # Model should always leave B-dimension in rnn state: [N,B,H].
+    next_rnn_state = RnnState(h=hn, c=cn)
+
+    return base_q, object_selection_q, next_rnn_state

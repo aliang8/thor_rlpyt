@@ -30,6 +30,7 @@ def add_thor_args(parser):
   thor.add_argument('--visibility-distance', type=float, default=1.5, help="how far things can be and still be visible")
   thor.add_argument('--conservative-interaction-distance', type=float, default=1, help="how far things can be and still be visible")
 
+  thor.add_argument('--headless', action='store_true', help="headless")
   thor.add_argument('--force-visible', type=int, default=1, help="Whether to force objects to be visible or not")
   thor.add_argument('--InitialRandomSpawn', type=int, default=0, choices=[0,1], help="Whether to use this function to intialize scenes. Main utility is setting seed for object generation. however, as of 1.0.2, this seed doesn't give consistent object ids.")
   thor.add_argument('--RandomToggleStateOfAllObjects', type=int, default=0, choices=[0,1], help="Whether to randomize initial states of objects")
@@ -41,6 +42,8 @@ def add_thor_args(parser):
   thor.add_argument('--maxNumRepeats', type=int, default=5, help="Max number of repeat initializations to spawn all objects visibly. A thor argument.")
   thor.add_argument('--rotateStepDegrees', type=float, default=90, help="degrees to use for rotation")
   thor.add_argument('--rotateHorizonDegrees', type=float, default=30, help="degrees to use for rotation")
+  thor.add_argument('--max-objects-per-timestep', type=int, default=20, help="number of visible objects per timestep")
+  thor.add_argument('--min-bounding-box-area', type=int, default=50, help="min bounding box area for visible objects")
 
   # TASK STUFF - clean this up later
   thor.add_argument('--tasks', nargs='+', type=str, default=[], help="tasks to load thor environment with")
@@ -74,7 +77,6 @@ def add_thor_args(parser):
 
   thor.add_argument('--remove-excess-pickupable', type=int, default=0, choices=[0,1], help="whether to remove excess objects")
   thor.add_argument('--keep-k-task-neighbors', type=int, default=2, help="number of non-task objects to not remove")
-
   return parser
 
 def default_config(parser=None):

@@ -1,0 +1,16 @@
+[
+  {
+    "actions": [
+      "PickupObject"
+    ],
+    "objects": [
+      "Apple"
+    ],
+    "preconditions": [
+    ],
+    "reward": 1,
+    "goal": [
+      ["isPickedUp", "Apple", true]
+    ]
+  }
+]

@@ -10,10 +10,10 @@ from rlpyt.utils.misc import iterate_mb_idxs
 
 from rlpyt.algos.pg.ppo import PPO
 
-OptInfoCustom = namedarraytuple("OptInfoCustom", ["loss", "loss_b", "loss_p", "gradNorm", "entropy_b", "entropy_p", "perplexity_b", "perplexity_p"])
+OptInfoCustom = namedarraytuple("OptInfoCustom", ["loss", "loss_b", "loss_o", "gradNorm", "entropy_b", "entropy_o", "perplexity_b", "perplexity_o"])
 
 LossInputs = namedarraytuple("LossInputs",
-    ["agent_inputs", "action", "return_", "advantage", "valid", "old_dist_info_b", "old_dist_info_p"])
+    ["agent_inputs", "action", "return_", "advantage", "valid", "old_dist_info_b", "old_dist_info_o"])
 
 
 class PPO_Custom(PPO):
@@ -65,7 +65,7 @@ class PPO_Custom(PPO):
             advantage=advantage,
             valid=valid,
             old_dist_info_b=samples.agent.agent_info.dist_info_b,
-            old_dist_info_p=samples.agent.agent_info.dist_info_p
+            old_dist_info_o=samples.agent.agent_info.dist_info_o
         )
         if recurrent:
             # Leave in [B,N,H] for slicing to minibatches.
@@ -84,7 +84,7 @@ class PPO_Custom(PPO):
                 self.optimizer.zero_grad()
                 rnn_state = init_rnn_state[B_idxs] if recurrent else None
                 # NOTE: if not recurrent, will lose leading T dim, should be OK.
-                loss, loss_b, loss_p, entropy_b, entropy_p, perplexity_b, perplexity_p = self.loss(
+                loss, loss_b, loss_o, entropy_b, entropy_o, perplexity_b, perplexity_o = self.loss(
                     *loss_inputs[T_idxs, B_idxs], rnn_state)
                 loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -94,14 +94,14 @@ class PPO_Custom(PPO):
 
                 opt_info.loss.append(loss.item())
                 opt_info.loss_b.append(loss_b.item())
-                opt_info.loss_p.append(loss_p.item())
+                opt_info.loss_o.append(loss_o.item())
 
                 opt_info.gradNorm.append(torch.tensor(grad_norm).item())  # backwards compatible
                 opt_info.entropy_b.append(entropy_b.item())
-                opt_info.entropy_p.append(entropy_p.item())
+                opt_info.entropy_o.append(entropy_o.item())
 
                 opt_info.perplexity_b.append(perplexity_b.item())
-                opt_info.perplexity_p.append(perplexity_p.item())
+                opt_info.perplexity_o.append(perplexity_o.item())
 
                 self.update_counter += 1
         if self.linear_lr_schedule:
@@ -109,7 +109,7 @@ class PPO_Custom(PPO):
             self.ratio_clip = self._ratio_clip * (self.n_itr - itr) / self.n_itr
         return opt_info
 
-    def loss(self, agent_inputs, action, return_, advantage, valid, old_dist_info_b, old_dist_info_p, init_rnn_state=None):
+    def loss(self, agent_inputs, action, return_, advantage, valid, old_dist_info_b, old_dist_info_o, init_rnn_state=None):
         """
         Compute the training loss: policy_loss + value_loss + entropy_loss
         Policy loss: min(likelhood-ratio * advantage, clip(likelihood_ratio, 1-eps, 1+eps) * advantage)
@@ -122,21 +122,27 @@ class PPO_Custom(PPO):
             # [B,N,H] --> [N,B,H] (for cudnn).
             init_rnn_state = buffer_method(init_rnn_state, "transpose", 0, 1)
             init_rnn_state = buffer_method(init_rnn_state, "contiguous")
-            dist_info_b, dist_info_p, value, _rnn_state = self.agent(*agent_inputs, init_rnn_state)
+            dist_info_b, dist_info_o, value, _rnn_state = self.agent(*agent_inputs, init_rnn_state)
         else:
-            dist_info_b, dist_info_p, value = self.agent(*agent_inputs)
+            dist_info_b, dist_info_o, value = self.agent(*agent_inputs)
 
-        dist_b, dist_p = self.agent.categorical_dist, self.agent.beta_dist
+        dist_b, dist_o = self.agent.base_action_dist, self.agent.other_action_dist
 
         # Base action policy loss
         if self.agent.recurrent:
-            assert(len(action.shape) == 3)
-            base = action[:,:,0].long()
-            pointer = action[:,:,-2:]
+            if self.agent.model.action_sizes[1][-1] == 'categorical':
+                action = action.squeeze(1)
+                assert(len(action.shape) == 3)
+                base = action[:,:,0].long()
+                other = action[:,:,-1].long()
+            else:
+                assert(len(action.shape) == 3)
+                base = action[:,:,0].long()
+                other = action[:,:,-2:]
         else:
             assert(len(action.shape) == 2)
             base = action[:,0].squeeze(-1).long()
-            pointer = action[:,-2:]
+            other = action[:,-2:]
 
         ratio = dist_b.likelihood_ratio(base, old_dist_info=old_dist_info_b, new_dist_info=dist_info_b)
 
@@ -150,18 +156,21 @@ class PPO_Custom(PPO):
         surrogate = torch.min(surr_1, surr_2)
         pi_loss_b = - valid_mean(surrogate, valid)
 
-        # Pointer action policy loss
-        ratio = dist_p.likelihood_ratio(pointer, old_dist_info=old_dist_info_p, new_dist_info=dist_info_p)
+        # other action policy loss
+        ratio = dist_o.likelihood_ratio(other, old_dist_info=old_dist_info_o, new_dist_info=dist_info_o)
 
         if len(ratio.shape) - len(advantage.shape) == 1: # TODO: this feels hacky ...
             advantage = advantage.unsqueeze(-1)
+            valid_o = valid.unsqueeze(-1)
+        else:
+            valid_o = valid
 
         surr_1 = ratio * advantage
         clipped_ratio = torch.clamp(ratio, 1. - self.ratio_clip,
             1. + self.ratio_clip)
         surr_2 = clipped_ratio * advantage
         surrogate = torch.min(surr_1, surr_2)
-        pi_loss_p = - valid_mean(surrogate, valid)
+        pi_loss_o = - valid_mean(surrogate, valid_o)
 
         value_error = 0.5 * (value - return_) ** 2
         value_loss = self.value_loss_coeff * valid_mean(value_error, valid)
@@ -170,20 +179,20 @@ class PPO_Custom(PPO):
         entropy_b = dist_b.mean_entropy(dist_info_b, valid)
         entropy_loss_b = -self.entropy_loss_coeff * entropy_b
 
-        # Pointer action entropy
-        entropy_p = dist_p.mean_entropy(dist_info_p, valid)
-        entropy_loss_p = -self.entropy_loss_coeff * entropy_p
+        # other action entropy
+        entropy_o = dist_o.mean_entropy(dist_info_o, valid_o)
+        entropy_loss_o = -self.entropy_loss_coeff * entropy_o
 
         loss_b = pi_loss_b + entropy_loss_b
-        loss_p = pi_loss_p + entropy_loss_p
-        loss = loss_b + loss_p + value_loss
+        loss_o = pi_loss_o + entropy_loss_o
+        loss = loss_b + loss_o + value_loss
 
-        if torch.isnan(loss_b) or torch.isnan(loss_p) or torch.isnan(entropy_b):
+        if torch.isnan(loss_b) or torch.isnan(loss_o) or torch.isnan(entropy_b):
             import ipdb; ipdb.set_trace()
 
-        # print(f'loss b: {loss_b}, loss p: {loss_p}, entropy_b: {entropy_b}, entropy_p: {entropy_p}')
+        # print(f'loss b: {loss_b}, loss p: {loss_o}, entropy_b: {entropy_b}, entropy_o: {entropy_o}')
 
         perplexity_b = dist_b.mean_perplexity(dist_info_b, valid)
-        perplexity_p = dist_p.mean_perplexity(dist_info_p, valid)
+        perplexity_o = dist_o.mean_perplexity(dist_info_o, valid_o)
 
-        return loss, loss_b, loss_p, entropy_b, entropy_p, perplexity_b, perplexity_p
+        return loss, loss_b, loss_o, entropy_b, entropy_o, perplexity_b, perplexity_o
